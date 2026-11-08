@@ -1080,6 +1080,10 @@ ${
                 </div>
             `;
         }
+        const modal = document.getElementById('consultar-agendamento');
+            if (modal && resultado.innerHTML.trim() !== '') {
+                modal.classList.add('com-resultado');
+            }
 
     });
 
@@ -1311,3 +1315,87 @@ async function confirmarRemarcacao(id) {
     }
 
 }
+
+//brayan adiconando
+// ========================================
+// ATUALIZAR PASSO ATIVO CONFORME SCROLL
+// ========================================
+const etapas = document.querySelectorAll('.etapa');
+const passos = document.querySelectorAll('.passo');
+
+// Mapeamento: id da etapa → índice do passo (0-based)
+const mapaEtapas = {
+    'servicos':           0,
+    'etapa-profissional': 1,
+    'etapa-data':         2,
+    'etapa-dados':        3
+};
+
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const index = mapaEtapas[entry.target.id];
+            if (index === undefined) return;
+
+            passos.forEach((p, i) => {
+                p.classList.toggle('ativo', i === index);
+            });
+        }
+    });
+}, {
+    rootMargin: '-40% 0px -40% 0px',
+    threshold: 0
+});
+
+etapas.forEach(etapa => observer.observe(etapa));
+
+//modal
+// // ========================================
+// MODAL: CONSULTAR AGENDAMENTO
+// ========================================
+const modalConsulta = document.getElementById('consultar-agendamento');
+const botoesAbrirModal = document.querySelectorAll('[data-abrir-modal]');
+const botaoFecharModal = modalConsulta ? modalConsulta.querySelector('.modal-fechar') : null;
+
+function abrirModalConsulta(e) {
+    if (e) e.preventDefault();
+    if (modalConsulta) modalConsulta.classList.add('aberto');
+    document.body.style.overflow = 'hidden';
+}
+
+function fecharModalConsulta() {
+    if (modalConsulta) modalConsulta.classList.remove('aberto');
+  document.body.style.overflow = '';
+
+
+  // NOVO: reseta o form e o resultado ao fechar
+  if (modalConsulta) {
+      modalConsulta.classList.remove('com-resultado');
+      const resultado = modalConsulta.querySelector('#resultadoAtendimento');
+      if (resultado) resultado.innerHTML = '';
+      const inputNumero = modalConsulta.querySelector('#numeroAtendimento');
+      if (inputNumero) inputNumero.value = '';
+  }
+}
+
+// Abre ao clicar no botão do hero
+botoesAbrirModal.forEach(btn => btn.addEventListener('click', abrirModalConsulta));
+
+// Fecha no ×
+if (botaoFecharModal) {
+    botaoFecharModal.addEventListener('click', fecharModalConsulta);
+}
+
+// Fecha ao clicar no overlay
+if (modalConsulta) {
+    modalConsulta.addEventListener('click', (e) => {
+        if (e.target === modalConsulta) fecharModalConsulta();
+    });
+}
+
+// Fecha com ESC
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modalConsulta && modalConsulta.classList.contains('aberto')) {
+        fecharModalConsulta();
+    }
+});

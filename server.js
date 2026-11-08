@@ -1,10 +1,201 @@
 const express = require("express");
+
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
+const crypto = require("crypto")
 
 const app = express();
-const PORTA = process.env.PORT || 3000;
+const PORTA = process.env.PORT || 3002;
 
+//Configurando os emails
+const nodemailer = require("nodemailer")
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOSTER,
+  port: 587,
+  secure: false, // true para porta 465
+  auth: {
+    user: process.env.EMAIL_USER, // Puxa do .env
+    pass: process.env.EMAIL_PASS  // Puxa do .env
+  }
+});
+
+console.log(process.env.EMAIL_USER)
+console.log(process.env.EMAIL_PASS)
+
+transporter.verify(function(error, success) {
+  if (error) {
+    console.log("Erro na configuração:", error);
+  } else {
+    console.log("Servidor pronto para enviar mensagens!");
+  }
+});
+
+//dicionario de Acao
+// {
+//    acao: excluir||reagendar
+//    data : horario
+//    hash:
+//    info:{}
+// }
+
+const ACOES = Object.freeze({
+  EXCLUIR: "EXCLUIR",
+  REAGENDAR: "REAGENDAR"
+})
+
+const acoesPendentes = {
+  'e3196a82f9fb35533d05181fdbb8dd936fa881c3233acdf9c9652a3050a0815d': {
+    acao: 'EXCLUIR', data: "2026-11-01T01:16:38.991Z", id: '1', info: {}
+  },
+  '40e898d458d48f1e472eea863b7dc5486821366fd201bc4a862bae30f38476d9': {
+    acao: 'REAGENDAR',
+    data: '2026-11-06T22:38:45.206Z',
+    id: '2',
+    info: { data: '2026-11-19', horario: '15:00' }
+  }
+}
+//preciso saber o usuario num futuro
+function criarAcao(acao, id,info) {
+
+  //vamos ter laungs problemas, resolver depois,
+  // 1 a gente teria que verificar se o agendamento fa foi excluido ou reagendado antes de fazer o email, mas agora fds
+  console.log("testestes id"+ id)
+  const sql = `
+      SELECT
+          agendamentos.id,
+          agendamentos.profissional_id,
+          clientes.nome AS cliente,
+          clientes.whatsapp,
+          clientes.email,
+          servicos.nome AS servico,
+          servicos.preco,
+          profissionais.nome AS profissional,
+          agendamentos.data,
+          agendamentos.horario,
+          agendamentos.status,
+          agendamentos.criado_em
+      FROM agendamentos
+
+      INNER JOIN clientes
+          ON clientes.id = agendamentos.cliente_id
+
+      INNER JOIN servicos
+          ON servicos.id = agendamentos.servico_id
+
+      INNER JOIN profissionais
+          ON profissionais.id = agendamentos.profissional_id
+
+      WHERE agendamentos.id = ?
+  `;
+
+  db.get(sql, [id], (erro, agendamento) => {
+
+      if (erro) {
+          console.error("Erro ao consultar agendamento:", erro);
+
+      }
+      if (!agendamento.id) {
+        return 0
+      }
+          const hashAleatorio = crypto.randomBytes(32).toString('hex');
+          acoesPendentes[hashAleatorio] =
+          {
+            acao: acao,
+            data: new Date(),
+            id: id,
+            info:info
+          }
+
+          console.log(acoesPendentes)
+          mandarEmail(
+            agendamento.email,
+            acao == ACOES.EXCLUIR ? "cancelamento do agendamento ": "confirmar reagendamento",
+            `
+            <!DOCTYPE html>
+            <html lang="pt-BR">
+            <head>
+                <meta charset="UTF-8">
+                <title>Confirmação de Acesso</title>
+            </head>
+            <body style="margin: 0; padding: 20px; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 450px; background-color: #ffffff; padding: 30px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                    <tr>
+                        <td align="center">
+                            <h3 style="color: #333; margin-top: 0;">Verificação em Duas Etapas</h3>
+                            <p style="color: #666; font-size: 15px; margin-bottom: 25px;">
+                               ${ acao == ACOES.EXCLUIR ? "cancelamento do agendamento ": "confirmar reagendamento"}
+                            </p>
+                            <a href="${process.env.URL_HOSTER}/api/verificar/${hashAleatorio}" style="background-color: #007bff; color: #ffffff; padding: 12px 24px; border-radius: 5px; text-decoration: none; font-weight: bold; font-size: 15px; display: inline-block;">
+                                Confirmar
+                            </a>
+                            <p style="color: #999; font-size: 12px; margin-top: 30px; margin-bottom: 0;">
+                                Se não foi você, ignore este email.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </body>
+            </html>
+            ` )
+
+  });
+
+
+}
+function mandarEmail(destinatario, assunto, email) {
+
+    transporter.sendMail({
+      from: "barbearia uni9<brayanlucasop@uni9.edu.br>",
+      to: destinatario,
+      subject: assunto,
+      text: "",
+      html: email,
+    }, (error, info) => {
+      if (error) {
+        return console.log("Erro ao enviar:", error);
+      }
+      console.log("E-mail enviado com sucesso:", info.response);
+    });
+
+}
+
+function verificarHorarioLivre(agendamentoId, data, horario) {
+  return new Promise((resolve, reject) => {
+
+  // Verificar se o horário já está ocupado
+  const verificarHorario = `
+      SELECT id
+      FROM agendamentos
+      WHERE profissional_id = (
+          SELECT profissional_id
+          FROM agendamentos
+          WHERE id = ?
+      )
+      AND data = ?
+      AND horario = ?
+      AND status IN ('agendado', 'confirmado')
+      AND id != ?
+  `;
+
+  db.get(
+    verificarHorario,
+    [agendamentoId, data, horario, agendamentoId],
+    (erro, agendamentoExistente) => {
+      console.log("oi, estamos aqui")
+      console.log(agendamentoExistente)
+      if (erro) {
+        return resolve([false,"Erro ao verificar horário"])
+      }
+
+      if (agendamentoExistente) {
+            return resolve([false,"Esse horário já está ocupado."])
+      }
+
+      return resolve([true, "horario disponivel"])
+
+    })
+   })
+}
 // ========================================
 // CONFIGURAÇÕES
 // ========================================
@@ -109,7 +300,6 @@ db.serialize(() => {
 
     });
 
-
     // -----------------------------
     // TABELA DE PROFISSIONAIS
     // -----------------------------
@@ -132,7 +322,6 @@ db.serialize(() => {
         }
 
     });
-
 
     // -----------------------------
     // TABELA DE CLIENTES
@@ -217,35 +406,20 @@ db.serialize(() => {
 // ========================================
 
 const servicos = [
-
     ["Corte degradê", 35, 40],
-
     ["Corte social", 30, 30],
-
     ["Barba", 25, 30],
-
     ["Corte + barba", 50, 60],
-
     ["Sobrancelha", 15, 15],
-
     ["Corte e penteado", 45, 50],
-
     ["Limpeza de pele", 60, 60],
-
     ["Corte + progressiva", 100, 120],
-
     ["Corte + alisamento", 100, 120],
-
     ["Corte + botox", 110, 120],
-
     ["Corte + hidratação", 80, 90],
-
     ["Acabamento", 20, 20],
-
     ["Corte + luzes", 150, 180]
-
 ];
-
 
 // ========================================
 // INSERIR SERVIÇOS APENAS SE NÃO EXISTIREM
@@ -298,7 +472,6 @@ db.get(
     }
 );
 
-
 // ========================================
 // INSERIR PROFISSIONAIS
 // ========================================
@@ -308,7 +481,6 @@ const profissionais = [
     "João",
     "Lucas"
 ];
-
 
 db.get(
     "SELECT COUNT(*) AS total FROM profissionais",
@@ -409,12 +581,9 @@ app.get("/api/servicos", (req, res) => {
     );
 
 });
-
-
 // ========================================
 // LISTAR PROFISSIONAIS
 // ========================================
-
 app.get("/api/profissionais", (req, res) => {
 
     db.all(
@@ -441,10 +610,7 @@ app.get("/api/profissionais", (req, res) => {
 
         }
     );
-
 });
-
-
 // ========================================
 // VERIFICAR HORÁRIO
 // ========================================
@@ -471,7 +637,6 @@ app.get("/api/horario-disponivel", (req, res) => {
 
     }
 
-
     const sql = `
         SELECT id
         FROM agendamentos
@@ -480,7 +645,6 @@ app.get("/api/horario-disponivel", (req, res) => {
         AND horario = ?
         AND status IN ('agendado', 'confirmado')
     `;
-
 
     db.get(
         sql,
@@ -728,12 +892,75 @@ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpo)) {
                     }
 
 
-                    const clienteId = this.lastID;
+                  const clienteId = this.lastID;
 
+
+                  // -----------------------------
+                  // CRIAR AGENDAMENTO
+                  // -----------------------------
+
+                  const sqlAgendamento = `
+                      INSERT INTO agendamentos
+                      (
+                          cliente_id,
+                          servico_id,
+                          profissional_id,
+                          data,
+                          horario
+                      )
+                      VALUES (?, ?, ?, ?, ?)
+                  `;
+
+
+                  db.run(
+                      sqlAgendamento,
+                      [
+                          clienteId,
+                          servico_id,
+                          profissional_id,
+                          data,
+                          horario
+                      ],
+                      function (erro) {
+
+                          if (erro) {
+
+                              console.error(erro);
+
+                              return res.status(500).json({
+                                  sucesso: false,
+                                  mensagem:
+                                      "Erro ao criar agendamento."
+                              });
+
+                          }
+
+
+                          res.status(201).json({
+
+                              sucesso: true,
+
+                              mensagem:
+                                  "Agendamento realizado com sucesso!",
+
+                              agendamento_id:
+                                  this.lastID
+
+                          });
+
+                      }
+                  );
+
+              }
+          );
+
+      }
+  );
+
+});
                     // ========================================
 // LISTAR HORÁRIOS DISPONÍVEIS
 // ========================================
-
 app.get("/api/horarios-disponiveis", (req, res) => {
 
     const {
@@ -821,69 +1048,7 @@ app.get("/api/horarios-disponiveis", (req, res) => {
 });
 
 
-                    // -----------------------------
-                    // CRIAR AGENDAMENTO
-                    // -----------------------------
 
-                    const sqlAgendamento = `
-                        INSERT INTO agendamentos
-                        (
-                            cliente_id,
-                            servico_id,
-                            profissional_id,
-                            data,
-                            horario
-                        )
-                        VALUES (?, ?, ?, ?, ?)
-                    `;
-
-
-                    db.run(
-                        sqlAgendamento,
-                        [
-                            clienteId,
-                            servico_id,
-                            profissional_id,
-                            data,
-                            horario
-                        ],
-                        function (erro) {
-
-                            if (erro) {
-
-                                console.error(erro);
-
-                                return res.status(500).json({
-                                    sucesso: false,
-                                    mensagem:
-                                        "Erro ao criar agendamento."
-                                });
-
-                            }
-
-
-                            res.status(201).json({
-
-                                sucesso: true,
-
-                                mensagem:
-                                    "Agendamento realizado com sucesso!",
-
-                                agendamento_id:
-                                    this.lastID
-
-                            });
-
-                        }
-                    );
-
-                }
-            );
-
-        }
-    );
-
-});
 
 // ========================================
 // CANCELAR AGENDAMENTO
@@ -892,43 +1057,43 @@ app.get("/api/horarios-disponiveis", (req, res) => {
 app.put("/api/agendamentos/:id/cancelar", (req, res) => {
 
     const id = req.params.id;
+    criarAcao(ACOES.EXCLUIR, id)
+    // const sql = `
+    //     UPDATE agendamentos
+    //     SET status = 'cancelado'
+    //     WHERE id = ?
+    //     AND status IN ('agendado', 'confirmado')
+    // `;
 
-    const sql = `
-        UPDATE agendamentos
-        SET status = 'cancelado'
-        WHERE id = ?
-        AND status IN ('agendado', 'confirmado')
-    `;
+    // db.run(sql, [id], function (erro) {
 
-    db.run(sql, [id], function (erro) {
+    //     if (erro) {
 
-        if (erro) {
+    //         console.error("Erro ao cancelar agendamento:", erro);
 
-            console.error("Erro ao cancelar agendamento:", erro);
+    //         return res.status(500).json({
+    //             sucesso: false,
+    //             mensagem: "Erro ao cancelar agendamento."
+    //         });
 
-            return res.status(500).json({
-                sucesso: false,
-                mensagem: "Erro ao cancelar agendamento."
-            });
+    //     }
 
-        }
+    //     if (this.changes === 0) {
 
-        if (this.changes === 0) {
+    //         return res.status(400).json({
+    //             sucesso: false,
+    //             mensagem:
+    //                 "Agendamento não encontrado ou já foi cancelado."
+    //         });
 
-            return res.status(400).json({
-                sucesso: false,
-                mensagem:
-                    "Agendamento não encontrado ou já foi cancelado."
-            });
+    //     }
 
-        }
+    //     res.json({
+    //         sucesso: true,
+    //         mensagem: "Agendamento cancelado com sucesso!"
+    //     });
 
-        res.json({
-            sucesso: true,
-            mensagem: "Agendamento cancelado com sucesso!"
-        });
-
-    });
+    // });
 
 });
 
@@ -1090,136 +1255,212 @@ app.patch("/api/admin/agendamentos/:id/status", (req, res) => {
     });
 });
 
+console.log("asdfasdasdasdfasfasf")
+
+
+app.get("/api/verificar/:hash",async  (req, res) => {
+  const hash = req.params.hash
+  console.log(acoesPendentes)
+  console.log("bu")
+  console.log(acoesPendentes[hash])
+  if (!acoesPendentes[hash]?.id) {
+    res.json({
+      sucesso: false,
+      mensagem: "operacao invalida"
+    });
+    }
+    switch (acoesPendentes[hash].acao) {
+      case ACOES.EXCLUIR:
+        console.log("asda")
+        const sql = `
+            UPDATE agendamentos
+            SET status = 'cancelado'
+            WHERE id = ?
+            AND status IN ('agendado', 'confirmado')
+        `;
+        db.run(sql, [acoesPendentes[hash].id], function (erro) {
+          if (erro) {
+            console.error("Erro ao cancelar agendamento:", erro);
+            // res.status(500).json({
+            //   sucesso: false,
+            //   mensagem: "Erro ao cancelar agendamento."
+            // });
+          } else if (this.changes === 0) {
+            // res.status(400).json({
+            //   sucesso: false,
+            //   mensagem:
+            //     "Agendamento não encontrado ou já foi cancelado."
+            // });
+          }
+          // res.json({
+          //   sucesso: true,
+          //   mensagem: "Agendamento cancelado com sucesso!"
+          // });
+
+        })
+        break;
+      case (ACOES.REAGENDAR):
+        if (await verificarHorarioLivre(acoesPendentes[hash].id, acoesPendentes[hash].info.data, acoesPendentes[hash].info.horario)) {
+          const atualizar = `
+                     UPDATE agendamentos
+                     SET data = ?, horario = ?
+                     WHERE id = ?
+                     AND status = 'agendado'
+                 `;
+
+          console.log("boca do db run")
+        db.run(
+          atualizar,
+          [acoesPendentes[hash].info.data, acoesPendentes[hash].info.horario, acoesPendentes[hash].id],
+          function (erro) {
+
+            if (erro) {
+
+              console.error(
+                "Erro ao remarcar:",
+                erro
+              );
+
+              // return res.status(500).json({
+              //   sucesso: false,
+              //   mensagem:
+              //     "Erro ao remarcar atendimento."
+              // });
+
+            }
+
+            if (this.changes === 0) {
+
+              // return res.status(400).json({
+              //   sucesso: false,
+              //   mensagem:
+              //     "Atendimento não encontrado ou já cancelado."
+              // });
+
+            }
+
+            // res.json({
+            //   sucesso: true,
+            //   mensagem:
+            //     "Atendimento remarcado com sucesso!"
+            // });
+          })
+
+          }
+
+      break;
+
+
+    }
+
+    res.redirect('/');
+
+});
+
+
+
+
+
+// ========================================
+// REMARCAR AGENDAMENTO
+// ========================================
+
+app.put("/api/agendamentos/:id/remarcar", async  (req, res) => {
+
+    const id = req.params.id;
+
+    const{
+        data,
+        horario
+    } = req.body;
+
+//     // Verificar se os dados foram enviados
+    if (!data || !horario) {
+
+      return res.status(400).json({
+          sucesso: false,
+          mensagem: "Informe a nova data e o novo horário."
+      });
+
+    }
+  console.log("ver o que tenrona")
+  console.log(await verificarHorarioLivre(id, data, horario))
+  if (await verificarHorarioLivre(id, data, horario)) {
+    criarAcao(ACOES.REAGENDAR, id,{data,horario})
+    console.log(acoesPendentes)
+    return res.json({
+        sucesso: true,
+        mensagem: "reagendamento solicitado, por favor confirme no email"
+    });
+
+  }
+  return res.json({
+      sucesso: false,
+      mensagem: "algo deu errado"
+  });
+    //         // Atualizar o atendimento
+    //         const atualizar = `
+    //             UPDATE agendamentos
+    //             SET data = ?, horario = ?
+    //             WHERE id = ?
+    //             AND status = 'agendado'
+    //         `;
+
+    //         db.run(
+    //             atualizar,
+    //             [data, horario, id],
+    //             function (erro) {
+
+    //                 if (erro) {
+
+    //                     console.error(
+    //                         "Erro ao remarcar:",
+    //                         erro
+    //                     );
+
+    //                     return res.status(500).json({
+    //                         sucesso: false,
+    //                         mensagem:
+    //                             "Erro ao remarcar atendimento."
+    //                     });
+
+    //                 }
+
+    //                 if (this.changes === 0) {
+
+    //                     return res.status(400).json({
+    //                         sucesso: false,
+    //                         mensagem:
+    //                             "Atendimento não encontrado ou já cancelado."
+    //                     });
+
+    //                 }
+
+    //                 res.json({
+    //                     sucesso: true,
+    //                     mensagem:
+    //                         "Atendimento remarcado com sucesso!"
+    //                 });
+
+    //             }
+    //         );
+
+    //     }
+    // );
+
+});
 
 app.listen(PORTA, () => {
 
     console.log("");
     console.log("=================================");
     console.log("💈 BARBEARIA");
+            //
     console.log("=================================");
     console.log(
         `🚀 Servidor rodando em http://localhost:${PORTA}`
     );
     console.log("=================================");
     console.log("");
-
-});
-
-// ========================================
-// REMARCAR AGENDAMENTO
-// ========================================
-
-app.put("/api/agendamentos/:id/remarcar", (req, res) => {
-
-    const id = req.params.id;
-
-    const {
-        data,
-        horario
-    } = req.body;
-
-    // Verificar se os dados foram enviados
-    if (!data || !horario) {
-
-        return res.status(400).json({
-            sucesso: false,
-            mensagem: "Informe a nova data e o novo horário."
-        });
-
-    }
-
-    // Verificar se o horário já está ocupado
-    const verificarHorario = `
-        SELECT id
-        FROM agendamentos
-        WHERE profissional_id = (
-            SELECT profissional_id
-            FROM agendamentos
-            WHERE id = ?
-        )
-        AND data = ?
-        AND horario = ?
-        AND status IN ('agendado', 'confirmado')
-        AND id != ?
-    `;
-
-    db.get(
-        verificarHorario,
-        [id, data, horario, id],
-        (erro, agendamentoExistente) => {
-
-            if (erro) {
-
-                console.error(
-                    "Erro ao verificar horário:",
-                    erro
-                );
-
-                return res.status(500).json({
-                    sucesso: false,
-                    mensagem: "Erro ao verificar disponibilidade."
-                });
-
-            }
-
-            if (agendamentoExistente) {
-
-                return res.status(409).json({
-                    sucesso: false,
-                    mensagem:
-                        "Esse horário já está ocupado."
-                });
-
-            }
-
-            // Atualizar o atendimento
-            const atualizar = `
-                UPDATE agendamentos
-                SET data = ?, horario = ?
-                WHERE id = ?
-                AND status = 'agendado'
-            `;
-
-            db.run(
-                atualizar,
-                [data, horario, id],
-                function (erro) {
-
-                    if (erro) {
-
-                        console.error(
-                            "Erro ao remarcar:",
-                            erro
-                        );
-
-                        return res.status(500).json({
-                            sucesso: false,
-                            mensagem:
-                                "Erro ao remarcar atendimento."
-                        });
-
-                    }
-
-                    if (this.changes === 0) {
-
-                        return res.status(400).json({
-                            sucesso: false,
-                            mensagem:
-                                "Atendimento não encontrado ou já cancelado."
-                        });
-
-                    }
-
-                    res.json({
-                        sucesso: true,
-                        mensagem:
-                            "Atendimento remarcado com sucesso!"
-                    });
-
-                }
-            );
-
-        }
-    );
 
 });
